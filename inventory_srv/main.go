@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/apache/rocketmq-client-go/v2"
+	"github.com/apache/rocketmq-client-go/v2/consumer"
 	"github.com/satori/go.uuid"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -66,10 +68,23 @@ func main() {
 		}
 	}()
 
+	//监听库存归还topic
+	c, _ := rocketmq.NewPushConsumer(
+		consumer.WithNameServer([]string{"192.168.1.4:9876"}),
+		consumer.WithGroupName("mingshop-inventory"),
+	)
+
+	if err := c.Subscribe("order_reback", consumer.MessageSelector{}, handler.AutoReback); err != nil {
+		fmt.Printf("读取消息失败: %s\n", err)
+	}
+	_ = c.Start()
+	//不能让主goroutine退出
+
 	//接收终止信号
 	quit := make(chan os.Signal)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
+	_ = c.Shutdown()
 	if err = register_client.DeRegister(serviceId); err != nil {
 		zap.S().Info("注销服务失败")
 	} else {
