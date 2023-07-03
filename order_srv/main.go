@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"github.com/apache/rocketmq-client-go/v2"
 	"github.com/apache/rocketmq-client-go/v2/consumer"
+	"github.com/opentracing/opentracing-go"
 	"github.com/satori/go.uuid"
+	"github.com/uber/jaeger-client-go"
+	jaegercfg "github.com/uber/jaeger-client-go/config"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -15,6 +18,7 @@ import (
 	"mingshop_srvs/order_srv/initalize"
 	"mingshop_srvs/order_srv/proto"
 	"mingshop_srvs/order_srv/utils"
+	"mingshop_srvs/order_srv/utils/otgrpc"
 	"mingshop_srvs/order_srv/utils/register/consul"
 	"net"
 	"os"
@@ -43,7 +47,23 @@ func main() {
 	}
 	zap.S().Info("port:", *Port)
 
-	server := grpc.NewServer()
+	//初始化jaeger(不需要拿到客户端的tracer，可以自己创建一个不影响的,server端也会创建一个span)
+	cfg := jaegercfg.Configuration{
+		Sampler: &jaegercfg.SamplerConfig{
+			Type:  jaeger.SamplerTypeConst,
+			Param: 1,
+		},
+		Reporter: &jaegercfg.ReporterConfig{
+			LogSpans: true,
+			//LocalAgentHostPort: fmt.Sprintf("%s:%d", global.ServerConfig.JaegerInfo.Host, global.ServerConfig.JaegerInfo.Port),
+			LocalAgentHostPort: "192.168.1.4:6831",
+		},
+		//ServiceName: global.ServerConfig.JaegerInfo.Name,
+		ServiceName: "mingshop",
+	}
+	tracer, closer, err := cfg.NewTracer(jaegercfg.Logger(jaeger.StdLogger))
+	opentracing.SetGlobalTracer(tracer)
+	server := grpc.NewServer(grpc.UnaryInterceptor(otgrpc.OpenTracingServerInterceptor(tracer)))
 	proto.RegisterOrderServer(server, &handler.OrderServer{})
 	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", *IP, *Port))
 	if err != nil {
@@ -86,6 +106,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	_ = c.Shutdown()
+	closer.Close()
 	if err = register_client.DeRegister(serviceId); err != nil {
 		zap.S().Info("注销服务失败")
 	} else {
